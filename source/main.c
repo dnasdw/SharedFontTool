@@ -91,6 +91,62 @@ typedef struct FontCodeMap
 	u32 PtrNext;
 } __attribute__((packed)) FontCodeMap;
 
+
+#define ENABLE_GSPWN
+
+#define GSP_HEAP_START_OFFSET_DEFAULT 0x14000000
+#define GSP_HEAP_START_OFFSET_FIRM80 0x30000000
+#define GSP_HEAP_MAX_LENGTH (g_bNew3DS ? 0xDC00000 : 0x6800000)
+#define GSP_HEAP_END_OFFSET_DEFAULT (GSP_HEAP_START_OFFSET_DEFAULT + GSP_HEAP_MAX_LENGTH)
+#define GSP_HEAP_END_OFFSET_FIRM80 (GSP_HEAP_START_OFFSET_FIRM80 + GSP_HEAP_MAX_LENGTH)
+
+#define BUFFER_LENGTH 0x1000
+
+static inline bool IsMemoryAddressWithinGSP(u32 address)
+{
+	return (address >= GSP_HEAP_START_OFFSET_DEFAULT && address < GSP_HEAP_END_OFFSET_DEFAULT) || 
+	(address >= GSP_HEAP_START_OFFSET_FIRM80 && address < GSP_HEAP_END_OFFSET_FIRM80);
+}
+
+Result DoGsPwn(void * dest, void * src, u32 size)
+{
+	return GX_TextureCopy(src, 0xFFFFFFFF, dest, 0xFFFFFFFF, size, 8);
+}
+
+Result MemoryCopy(void * dest, void * src, u32 size)
+{
+	bool isDestWithinGSP = IsMemoryAddressWithinGSP((u32)dest);
+	bool isSrcWithinGSP = IsMemoryAddressWithinGSP((u32)src);
+	if (isDestWithinGSP && !isSrcWithinGSP)
+	{
+		memcpy(dest, src, size);
+		return 0;
+	}
+	bool eitherWithoutGSP = !isDestWithinGSP || !isSrcWithinGSP;
+	if (!eitherWithoutGSP)
+	{
+		s32 remain = (s32)size;
+		s32 offset = 0;
+		printf("\E[18;0H");
+		printf("Do GSPWN\n");
+		printf("copy from %08x to %08x\n",(u32)src, (u32)dest);
+		while (remain > 0)
+		{
+			u32 isize = remain >= BUFFER_LENGTH ? BUFFER_LENGTH : remain;
+			DoGsPwn((u8*)dest + offset, (u8*)src + offset, isize);
+			GSPGPU_FlushDataCache((u8*)dest + offset, isize);
+			svcSleepThread(5 * 1000 * 1000);
+			remain -= isize;
+			offset += isize;
+			printf("\E[20;0H");
+			printf("%08x bytes done\n", offset);
+		}
+	}
+	
+}
+
+#ifndef ENABLE_GSPWN
+
 u32 memoryProtect(Handle a_hDest, u32 a_uAddress, u32 a_uSize)
 {
 	for (u32 i = 0; i < a_uSize; i += 0x1000)
@@ -156,8 +212,11 @@ u32 memoryCopy(Handle a_hDest, void* a_pDest, Handle a_hSrc, void* a_pSrc, u32 a
 	return ext_svcInvalidateProcessDataCache(a_hDest, (u32)a_pDest, a_uSize);
 }
 
+#endif
+
 void clearOutput()
 {
+	
 	static const char* c_pLine = "                                        ";
 	for (int i = 13; i < 25; i++)
 	{
@@ -169,6 +228,13 @@ void clearOutput()
 u32 initSharedFontType()
 {
 	clearOutput();
+	
+#ifdef ENABLE_GSPWN
+	void * buffer = linearAlloc(BUFFER_LENGTH);
+	MemoryCopy(buffer, (void*)g_uAddress, BUFFER_LENGTH);
+	memcpy(&g_uSharedFontType, (u8*)buffer + 4, sizeof(g_uSharedFontType));
+	linearFree(buffer);
+#else
 	Handle hHomeMenu = 0;
 	u32 uRet = svcOpenProcess(&hHomeMenu, 0xf);
 	if (uRet != 0)
@@ -201,6 +267,7 @@ u32 initSharedFontType()
 	}
 	svcCloseHandle(hHomeMenu);
 	clearOutput();
+#endif
 	return 0;
 }
 
@@ -239,7 +306,7 @@ u32 font2runtime(u8* a_pFont)
 u32 changeSharedFont(SharedFontType a_eType)
 {
 	u32 uRet = 0;
-	static const char* c_kPath[] = { "", "font/std/cbf_std.bcfnt", "font/cn/cbf_zh-Hans-CN.bcfnt", "font/kr/cbf_ko-Hang-KR.bcfnt", "font/tw/cbf_zh-Hant-TW.bcfnt" };
+	static const char* c_kPath[] = { "", "sdmc:/font/std/cbf_std.bcfnt", "sdmc:/font/cn/cbf_zh-Hans-CN.bcfnt", "sdmc:/font/kr/cbf_ko-Hang-KR.bcfnt", "sdmc:/font/tw/cbf_zh-Hant-TW.bcfnt" };
 	if (a_eType <= SHARED_FONT_TYPE_NULL || a_eType > SHARED_FONT_TYPE_TW)
 	{
 		return 1;
@@ -276,7 +343,12 @@ u32 changeSharedFont(SharedFontType a_eType)
 	static u32 c_uFontAddress = 0;
 	if (c_uFontAddress == 0)
 	{
+#ifdef ENABLE_GSPWN
+		c_uFontAddress = (u32)linearAlloc(0x332000);
+		uRet = c_uFontAddress == 0;
+#else
 		uRet = svcControlMemory(&c_uFontAddress, 0, 0, 0x332000, 0x10003, 3);
+#endif
 		if (uRet != 0)
 		{
 			fclose(fp);
@@ -303,6 +375,10 @@ u32 changeSharedFont(SharedFontType a_eType)
 	{
 		return uRet;
 	}
+#ifdef ENABLE_GSPWN
+	MemoryCopy((void*)g_uAddress, c_uFontAddress, uFileSize + 0x80);
+	linearFree((void*)g_uAddress);
+#else
 	Handle hHomeMenu = 0;
 	uRet = svcOpenProcess(&hHomeMenu, 0xf);
 	if (uRet != 0)
@@ -333,6 +409,7 @@ u32 changeSharedFont(SharedFontType a_eType)
 		return uRet;
 	}
 	svcCloseHandle(hHomeMenu);
+#endif
 	printf("change font ok\n");
 	return 0;
 }
@@ -350,7 +427,7 @@ int main(int argc, char* argv[])
 	if (uKernelVersion > SYSTEM_VERSION(2, 44, 6))
 	{
 		u8 uOut;
-		Result ret = APT_CheckNew3DS(0, &uOut);
+		Result ret = APT_CheckNew3DS(&uOut);
 		if (ret == 0)
 		{
 			if (uOut != 0)
