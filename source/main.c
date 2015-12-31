@@ -2,18 +2,8 @@
 #pragma GCC diagnostic ignored "-Wmultichar"
 
 #include <stdio.h>
+#include <string.h>
 #include <3ds.h>
-#include "ext_svc.h"
-
-#define CURRENT_PROCESS_HANDLE (0xffff8001)
-
-#define CONVERT_ENDIAN(n) (((n) >> 24 & 0xFF) | ((n) >> 8 & 0xFF00) | (((n) & 0xFF00) << 8) | (((n) & 0xFF) << 24))
-const u32 BinFileSigFONT = CONVERT_ENDIAN('CFNT');
-const u32 BinRuntimeSigFONT = CONVERT_ENDIAN('CFNU');
-const u32 BinBlockSigFINF = CONVERT_ENDIAN('FINF');
-
-bool g_bNew3DS = false;
-u32 g_uAddress = 0x18000000;
 
 typedef enum SharedFontType
 {
@@ -24,7 +14,22 @@ typedef enum SharedFontType
 	SHARED_FONT_TYPE_TW
 } SharedFontType;
 
-u32 g_uSharedFontType = SHARED_FONT_TYPE_NULL;
+typedef enum SharedFontLoadState
+{
+	SHARED_FONT_LOAD_STATE_NULL,
+	SHARED_FONT_LOAD_STATE_LOADING,
+	SHARED_FONT_LOAD_STATE_LOADED,
+	SHARED_FONT_LOAD_STATE_FAILED,
+	SHARED_FONT_LOAD_STATE_MAX_BIT = (1u << 31)
+} SharedFontLoadState;
+
+typedef struct SharedFontBufferHeader
+{
+	u32 SharedFontLoadState;
+	u32 SharedFontType;
+	u32 Size;
+	u8 Padding[116];
+} __attribute__((packed)) SharedFontBufferHeader;
 
 typedef struct BinaryFileHeader
 {
@@ -91,197 +96,116 @@ typedef struct FontCodeMap
 	u32 PtrNext;
 } __attribute__((packed)) FontCodeMap;
 
-
-#define ENABLE_GSPWN
-
+#define CONVERT_ENDIAN(n) (((n) >> 24 & 0xFF) | ((n) >> 8 & 0xFF00) | (((n) & 0xFF00) << 8) | (((n) & 0xFF) << 24))
+#define ADDRESS_NON_NEW_3DS 0x18000000
+#define ADDRESS_NEW_3DS 0x1bc00000
 #define GSP_HEAP_START_OFFSET_DEFAULT 0x14000000
 #define GSP_HEAP_START_OFFSET_FIRM80 0x30000000
 #define GSP_HEAP_MAX_LENGTH (g_bNew3DS ? 0xDC00000 : 0x6800000)
 #define GSP_HEAP_END_OFFSET_DEFAULT (GSP_HEAP_START_OFFSET_DEFAULT + GSP_HEAP_MAX_LENGTH)
 #define GSP_HEAP_END_OFFSET_FIRM80 (GSP_HEAP_START_OFFSET_FIRM80 + GSP_HEAP_MAX_LENGTH)
 
-#define BUFFER_LENGTH 0x1000
+const u32 g_kBinFileSigFONT = CONVERT_ENDIAN('CFNT');
+const u32 g_kBinRuntimeSigFONT = CONVERT_ENDIAN('CFNU');
+const u32 g_kBinBlockSigFINF = CONVERT_ENDIAN('FINF');
+const u32 g_kSharedFontMemorySize = 1024 * 4 * 818;	// Shared memory size for shared fonts: 3,272 KB
+const s32 g_kBufferSize = 0x1000;
 
-static inline bool IsMemoryAddressWithinGSP(u32 address)
-{
-	return (address >= GSP_HEAP_START_OFFSET_DEFAULT && address < GSP_HEAP_END_OFFSET_DEFAULT) || 
-	(address >= GSP_HEAP_START_OFFSET_FIRM80 && address < GSP_HEAP_END_OFFSET_FIRM80);
-}
-
-Result DoGsPwn(void * dest, void * src, u32 size)
-{
-	return GX_TextureCopy(src, 0xFFFFFFFF, dest, 0xFFFFFFFF, size, 8);
-}
-
-Result MemoryCopy(void * dest, void * src, u32 size)
-{
-	bool isDestWithinGSP = IsMemoryAddressWithinGSP((u32)dest);
-	bool isSrcWithinGSP = IsMemoryAddressWithinGSP((u32)src);
-	if (isDestWithinGSP && !isSrcWithinGSP)
-	{
-		memcpy(dest, src, size);
-		return 0;
-	}
-	bool eitherWithoutGSP = !isDestWithinGSP || !isSrcWithinGSP;
-	if (!eitherWithoutGSP)
-	{
-		s32 remain = (s32)size;
-		s32 offset = 0;
-		printf("\E[18;0H");
-		printf("Do GSPWN\n");
-		printf("copy from %08x to %08x\n",(u32)src, (u32)dest);
-		while (remain > 0)
-		{
-			u32 isize = remain >= BUFFER_LENGTH ? BUFFER_LENGTH : remain;
-			DoGsPwn((u8*)dest + offset, (u8*)src + offset, isize);
-			GSPGPU_FlushDataCache((u8*)dest + offset, isize);
-			svcSleepThread(5 * 1000 * 1000);
-			remain -= isize;
-			offset += isize;
-			printf("\E[20;0H");
-			printf("%08x bytes done\n", offset);
-		}
-	}
-	
-}
-
-#ifndef ENABLE_GSPWN
-
-u32 memoryProtect(Handle a_hDest, u32 a_uAddress, u32 a_uSize)
-{
-	for (u32 i = 0; i < a_uSize; i += 0x1000)
-	{
-		u32 uRet = svcControlProcessMemory(a_hDest, a_uAddress + i, a_uAddress + i, 0x1000, 6, 7);
-		if (uRet != 0 && uRet != 0xD900060C)
-		{
-			return uRet;
-		}
-	}
-	return 0;
-}
-
-u32 memoryCopy(Handle a_hDest, void* a_pDest, Handle a_hSrc, void* a_pSrc, u32 a_uSize)
-{
-	u32 uRet = ext_svcFlushProcessDataCache(a_hSrc, (u32)a_pSrc, a_uSize);
-	if (uRet != 0)
-	{
-		return uRet;
-	}
-	uRet = ext_svcFlushProcessDataCache(a_hDest, (u32)a_pDest, a_uSize);
-	if (uRet != 0)
-	{
-		return uRet;
-	}
-	u32 hDma = 0;
-	u32 uDmaConfig[20] = {};
-	uRet = ext_svcStartInterProcessDma(&hDma, a_hDest, a_pDest, a_hSrc, a_pSrc, a_uSize, uDmaConfig);
-	if (uRet != 0)
-	{
-		return uRet;
-	}
-	u32 uState = 0;
-	static u32 uInterProcessDmaFinishState = 0;
-	if (uInterProcessDmaFinishState == 0)
-	{
-		uRet = ext_svcGetDmaState(&uState, hDma);
-		svcSleepThread(1000000000);
-		uRet = ext_svcGetDmaState(&uState, hDma);
-		uInterProcessDmaFinishState = uState;
-		printf("InterProcessDmaFinishState: %08x\n", uState);
-	}
-	else
-	{
-		u32 i = 0;
-		for (i = 0; i < 10000; i++)
-		{
-			uState = 0;
-			uRet = ext_svcGetDmaState(&uState, hDma);
-			if (uState == uInterProcessDmaFinishState)
-			{
-				break;
-			}
-			svcSleepThread(1000000);
-		}
-		if (i >= 10000)
-		{
-			printf("memoryCopy time out %08x\n", uState);
-			return 1;
-		}
-	}
-	svcCloseHandle(hDma);
-	return ext_svcInvalidateProcessDataCache(a_hDest, (u32)a_pDest, a_uSize);
-}
-
-#endif
+u32 g_uSharedFontType = SHARED_FONT_TYPE_NULL;
+bool g_bNew3DS = false;
+u32 g_uAddress = ADDRESS_NON_NEW_3DS;
+u32 g_uFontAddress = 0;
+s32 g_nCurrentLine = 1;
 
 void clearOutput()
 {
-	
 	static const char* c_pLine = "                                        ";
-	for (int i = 13; i < 25; i++)
+	for (s32 i = 13; i < 25; i++)
 	{
 		printf("\E[%d;0H%s", i, c_pLine);
 	}
-	printf("\E[13;0H");
+	g_nCurrentLine = 13;
+	printf("\E[%d;0H", g_nCurrentLine);
 }
 
-u32 initSharedFontType()
+static inline bool isMemoryAddressWithinGSP(u32 a_uAddress)
+{
+	return (a_uAddress >= GSP_HEAP_START_OFFSET_DEFAULT && a_uAddress < GSP_HEAP_END_OFFSET_DEFAULT) || (a_uAddress >= GSP_HEAP_START_OFFSET_FIRM80 && a_uAddress < GSP_HEAP_END_OFFSET_FIRM80);
+}
+
+Result doGSPWN(void* a_pDest, void* a_pSrc, u32 a_uSize)
+{
+	return GX_SetTextureCopy(NULL, a_pSrc, 0xFFFFFFFF, a_pDest, 0xFFFFFFFF, a_uSize, 8);
+}
+
+void* memoryCopy(void* a_pDest, void* a_pSrc, u32 a_uSize)
+{
+	bool bIsDestWithinGSP = isMemoryAddressWithinGSP((u32)a_pDest);
+	bool bIsSrcWithinGSP = isMemoryAddressWithinGSP((u32)a_pSrc);
+	if (bIsDestWithinGSP)
+	{
+		if (bIsSrcWithinGSP)
+		{
+			s64 nRemain = a_uSize;
+			s32 nOffset = 0;
+			printf("\E[%d;0H""Do GSPWN\n", g_nCurrentLine++);
+			printf("\E[%d;0H""copy from %08x to %08x\n", g_nCurrentLine++, (u32)a_pSrc, (u32)a_pDest);
+			bool bChangeLine = false;
+			while (nRemain > 0)
+			{
+				u32 uSize = nRemain >= g_kBufferSize ? g_kBufferSize : (u32)nRemain;
+				doGSPWN((u8*)a_pDest + nOffset, (u8*)a_pSrc + nOffset, uSize);
+				GSPGPU_FlushDataCache(NULL, (u8*)a_pDest + nOffset, uSize);
+				svcSleepThread(5 * 1000 * 1000);
+				nRemain -= uSize;
+				nOffset += uSize;
+				printf("\E[%d;0H""%08x bytes done\n", g_nCurrentLine, nOffset);
+				bChangeLine = true;
+			}
+			if (bChangeLine)
+			{
+				g_nCurrentLine++;
+			}
+		}
+		else
+		{
+			return NULL;
+		}
+	}
+	else
+	{
+		if (bIsSrcWithinGSP)
+		{
+			return NULL;
+		}
+		else
+		{
+			memcpy(a_pDest, a_pSrc, a_uSize);
+		}
+	}
+	return a_pDest;
+}
+
+void initSharedFontType()
 {
 	clearOutput();
-	
-#ifdef ENABLE_GSPWN
-	void * buffer = linearAlloc(BUFFER_LENGTH);
-	MemoryCopy(buffer, (void*)g_uAddress, BUFFER_LENGTH);
-	memcpy(&g_uSharedFontType, (u8*)buffer + 4, sizeof(g_uSharedFontType));
-	linearFree(buffer);
-#else
-	Handle hHomeMenu = 0;
-	u32 uRet = svcOpenProcess(&hHomeMenu, 0xf);
-	if (uRet != 0)
-	{
-		printf("OpenProcess error: 0x%08X\n", uRet);
-		return uRet;
-	}
-	else
-	{
-		printf("OpenProcess ok\n");
-	}
-	//uRet = svcControlProcessMemory(hHomeMenu, g_uAddress, g_uAddress, 0x332000, 6, 7);
-	uRet = memoryProtect(hHomeMenu, g_uAddress, 0x1000);
-	if (uRet != 0)
-	{
-		svcCloseHandle(hHomeMenu);
-		printf("ControlProcessMemory error: 0x%08X\n", uRet);
-		return uRet;
-	}
-	else
-	{
-		printf("ControlProcessMemory ok\n");
-	}
-	uRet = memoryCopy(CURRENT_PROCESS_HANDLE, &g_uSharedFontType, hHomeMenu, (void*)(g_uAddress + 4), 4);
-	if (uRet != 0)
-	{
-		svcCloseHandle(hHomeMenu);
-		printf("memoryCopy error: 0x%08X\n", uRet);
-		return uRet;
-	}
-	svcCloseHandle(hHomeMenu);
-	clearOutput();
-#endif
-	return 0;
+	SharedFontBufferHeader* pHeader = (SharedFontBufferHeader*)linearAlloc((sizeof(SharedFontBufferHeader) + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
+	memoryCopy(pHeader, (void*)g_uAddress, (sizeof(SharedFontBufferHeader) + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
+	g_uSharedFontType = pHeader->SharedFontType;
+	linearFree(pHeader);
 }
 
 u32 font2runtime(u8* a_pFont)
 {
 	BinaryFileHeader* pBinaryFileHeader = (BinaryFileHeader*)(a_pFont);
-	if (pBinaryFileHeader->Signature != BinFileSigFONT)
+	if (pBinaryFileHeader->Signature != g_kBinFileSigFONT)
 	{
 		return 1;
 	}
 	BinaryBlockHeader* pBinaryBlockHeader = (BinaryBlockHeader*)(pBinaryFileHeader + 1);
-	if (pBinaryBlockHeader->Kind != BinBlockSigFINF)
+	if (pBinaryBlockHeader->Kind != g_kBinBlockSigFINF)
 	{
-		return 1;
+		return 2;
 	}
 	FontInformation* pFontInformation = (FontInformation*)(pBinaryBlockHeader + 1);
 	FontTextureGlyph *pFontTextureGlyph = (FontTextureGlyph*)(a_pFont + pFontInformation->PtrGlyph);
@@ -299,20 +223,19 @@ u32 font2runtime(u8* a_pFont)
 	pFontInformation->PtrGlyph += g_uAddress + 0x80;
 	pFontInformation->PtrWidth += g_uAddress + 0x80;
 	pFontInformation->PtrMap += g_uAddress + 0x80;
-	pBinaryFileHeader->Signature = BinRuntimeSigFONT;
+	pBinaryFileHeader->Signature = g_kBinRuntimeSigFONT;
 	return 0;
 }
 
 u32 changeSharedFont(SharedFontType a_eType)
 {
-	u32 uRet = 0;
 	static const char* c_kPath[] = { "", "sdmc:/font/std/cbf_std.bcfnt", "sdmc:/font/cn/cbf_zh-Hans-CN.bcfnt", "sdmc:/font/kr/cbf_ko-Hang-KR.bcfnt", "sdmc:/font/tw/cbf_zh-Hant-TW.bcfnt" };
 	if (a_eType <= SHARED_FONT_TYPE_NULL || a_eType > SHARED_FONT_TYPE_TW)
 	{
 		return 1;
 	}
 	clearOutput();
-	static int c_nTextColor = 0;
+	static s32 c_nTextColor = 0;
 	if (c_nTextColor == 32)
 	{
 		printf("\E[0;%dm", c_nTextColor);
@@ -323,94 +246,54 @@ u32 changeSharedFont(SharedFontType a_eType)
 		printf("\E[0m");
 		c_nTextColor = 32;
 	}
-	printf("Start change shared font %d\n", a_eType);
+	printf("\E[%d;0H""Start change shared font %d\n", g_nCurrentLine++, a_eType);
 	FILE* fp = fopen(c_kPath[a_eType], "rb");
 	if (fp == NULL)
 	{
-		printf("open %s error\n", c_kPath[a_eType]);
-		return 1;
+		printf("\E[%d;0H""open %s error\n", g_nCurrentLine++, c_kPath[a_eType]);
+		return 2;
 	}
 	fseek(fp, 0, SEEK_END);
 	u32 uFileSize = ftell(fp);
-	printf("font size 0x%X\n", uFileSize);
-	if (uFileSize > 0x332000 - 0x80)
+	printf("\E[%d;0H""font size 0x%X\n", g_nCurrentLine++, uFileSize);
+	if (uFileSize > g_kSharedFontMemorySize - sizeof(SharedFontBufferHeader))
 	{
 		fclose(fp);
-		printf("font size 0x%X > 0x%08X\n", uFileSize, 0x332000 - 0x80);
-		return 1;
+		printf("\E[%d;0H""font size 0x%X > 0x%08X\n", g_nCurrentLine++, uFileSize, g_kSharedFontMemorySize - sizeof(SharedFontBufferHeader));
+		return 3;
 	}
 	fseek(fp, 0, SEEK_SET);
-	static u32 c_uFontAddress = 0;
-	if (c_uFontAddress == 0)
+	if (g_uFontAddress == 0)
 	{
-#ifdef ENABLE_GSPWN
-		c_uFontAddress = (u32)linearAlloc(0x332000);
-		uRet = c_uFontAddress == 0;
-#else
-		uRet = svcControlMemory(&c_uFontAddress, 0, 0, 0x332000, 0x10003, 3);
-#endif
-		if (uRet != 0)
+		g_uFontAddress = (u32)linearAlloc((g_kSharedFontMemorySize + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
+		if (g_uFontAddress == 0)
 		{
 			fclose(fp);
-			printf("ControlMemory error: 0x%08X\n", uRet);
-			return uRet;
+			printf("\E[%d;0H""linearAlloc error\n", g_nCurrentLine++);
+			return 4;
 		}
 		else
 		{
-			printf("ControlMemory ok\n");
-			printf("font address %X\n", c_uFontAddress);
-			for (int i = 0xC; i < 0x80; i += 4)
+			printf("\E[%d;0H""linearAlloc ok\n", g_nCurrentLine++);
+			printf("\E[%d;0H""font address %X\n", g_nCurrentLine++, g_uFontAddress);
+			for (int i = 0xC; i < sizeof(SharedFontBufferHeader); i += 4)
 			{
-				*(u32*)(c_uFontAddress + i) = 0;
+				*(u32*)(g_uFontAddress + i) = 0;
 			}
-			*(u32*)c_uFontAddress = 2;
-			*(u32*)(c_uFontAddress + 4) = g_uSharedFontType;
+			*(u32*)g_uFontAddress = SHARED_FONT_LOAD_STATE_LOADED;
+			*(u32*)(g_uFontAddress + 4) = g_uSharedFontType;
 		}
 	}
-	*(u32*)(c_uFontAddress + 8) = uFileSize;
-	fread((void*)(c_uFontAddress + 0x80), 1, uFileSize, fp);
+	*(u32*)(g_uFontAddress + 8) = uFileSize;
+	fread((void*)(g_uFontAddress + sizeof(SharedFontBufferHeader)), 1, uFileSize, fp);
 	fclose(fp);
-	uRet = font2runtime((u8*)(c_uFontAddress + 0x80));
-	if (uRet != 0)
+	u32 uResult = font2runtime((u8*)(g_uFontAddress + sizeof(SharedFontBufferHeader)));
+	if (uResult != 0)
 	{
-		return uRet;
+		return 5;
 	}
-#ifdef ENABLE_GSPWN
-	MemoryCopy((void*)g_uAddress, c_uFontAddress, uFileSize + 0x80);
-	linearFree((void*)g_uAddress);
-#else
-	Handle hHomeMenu = 0;
-	uRet = svcOpenProcess(&hHomeMenu, 0xf);
-	if (uRet != 0)
-	{
-		printf("OpenProcess error: 0x%08X\n", uRet);
-		return uRet;
-	}
-	else
-	{
-		printf("OpenProcess ok\n");
-	}
-	uRet = memoryProtect(hHomeMenu, g_uAddress, 0x332000);
-	if (uRet != 0)
-	{
-		svcCloseHandle(hHomeMenu);
-		printf("ControlProcessMemory error: 0x%08X\n", uRet);
-		return uRet;
-	}
-	else
-	{
-		printf("ControlProcessMemory ok\n");
-	}
-	uRet = memoryCopy(hHomeMenu, (void*)g_uAddress, CURRENT_PROCESS_HANDLE, (void*)c_uFontAddress, uFileSize + 0x80);
-	if (uRet != 0)
-	{
-		svcCloseHandle(hHomeMenu);
-		printf("memoryCopy error: 0x%08X\n", uRet);
-		return uRet;
-	}
-	svcCloseHandle(hHomeMenu);
-#endif
-	printf("change font ok\n");
+	memoryCopy((void*)g_uAddress, (void*)g_uFontAddress, (sizeof(SharedFontBufferHeader) + uFileSize + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
+	printf("\E[%d;0H""change font ok\n", g_nCurrentLine++);
 	return 0;
 }
 
@@ -418,63 +301,51 @@ int main(int argc, char* argv[])
 {
 	gfxInitDefault();
 	consoleInit(GFX_BOTTOM, NULL);
-	printf("\E[1;0H");
-	printf("        Shared Font Tool v1.1\n");
-	printf("\n");
-	printf("Press START : exit\n");
+	printf("\E[%d;0H""        Shared Font Tool v1.2\n", g_nCurrentLine++);
+	printf("\E[%d;0H""\n", g_nCurrentLine++);
+	printf("\E[%d;0H""Press START : exit\n", g_nCurrentLine++);
 	u32 uKernelVersion = 0;
 	uKernelVersion = osGetKernelVersion();
 	if (uKernelVersion > SYSTEM_VERSION(2, 44, 6))
 	{
 		u8 uOut;
-		Result ret = APT_CheckNew3DS(&uOut);
-		if (ret == 0)
+		Result result = APT_CheckNew3DS(0, &uOut);
+		if (result == 0 && uOut != 0)
 		{
-			if (uOut != 0)
-			{
-				g_bNew3DS = true;
-			}
+			g_bNew3DS = true;
 		}
 	}
-	printf("\E[10;0H");
-	printf("New3DS: %s\n", g_bNew3DS ? "true" : "false");
+	g_nCurrentLine = 10;
+	printf("\E[%d;0H""New3DS: %s\n", g_nCurrentLine++, g_bNew3DS ? "true" : "false");
 	if (g_bNew3DS)
 	{
-		g_uAddress = 0x1bc00000;
+		g_uAddress = ADDRESS_NEW_3DS;
 	}
-	if (initSharedFontType() != 0)
+	initSharedFontType();
+	printf("\E[11;0H");
+	printf("SharedFontType: ");
+	switch (g_uSharedFontType)
 	{
-		g_uSharedFontType = SHARED_FONT_TYPE_STD;
-		printf("\E[11;0H");
-		printf("Get shared font type failed\n");
+	case SHARED_FONT_TYPE_NULL:
+		printf("null");
+		break;
+	case SHARED_FONT_TYPE_STD:
+		printf("std");
+		break;
+	case SHARED_FONT_TYPE_CN:
+		printf("cn");
+		break;
+	case SHARED_FONT_TYPE_KR:
+		printf("kr");
+		break;
+	case SHARED_FONT_TYPE_TW:
+		printf("tw");
+		break;
+	default:
+		printf("unknown");
+		break;
 	}
-	else
-	{
-		printf("\E[11;0H");
-		printf("SharedFontType: ");
-		switch (g_uSharedFontType)
-		{
-		case SHARED_FONT_TYPE_NULL:
-			printf("null");
-			break;
-		case SHARED_FONT_TYPE_STD:
-			printf("std");
-			break;
-		case SHARED_FONT_TYPE_CN:
-			printf("cn");
-			break;
-		case SHARED_FONT_TYPE_KR:
-			printf("kr");
-			break;
-		case SHARED_FONT_TYPE_TW:
-			printf("tw");
-			break;
-		default:
-			printf("unknown");
-			break;
-		}
-		printf("\n");
-	}
+	printf("\n");
 	bool bCanRecover = false;
 	bool bCanChangeToCN = false;
 	bool bCanChangeToTW = false;
@@ -523,17 +394,17 @@ int main(int argc, char* argv[])
 		{
 			changeSharedFont(SHARED_FONT_TYPE_CN);
 		}
-		else if ((kDown & KEY_DLEFT) != 0)
+		else if ((kDown & KEY_DLEFT) != 0 && bCanChangeToTW)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_TW && bCanChangeToTW);
+			changeSharedFont(SHARED_FONT_TYPE_TW);
 		}
-		else if ((kDown & KEY_DUP) != 0)
+		else if ((kDown & KEY_DUP) != 0 && bCanChangeToSTD)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_STD && bCanChangeToSTD);
+			changeSharedFont(SHARED_FONT_TYPE_STD);
 		}
-		else if ((kDown & KEY_DDOWN) != 0)
+		else if ((kDown & KEY_DDOWN) != 0 && bCanChangeToKR)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_KR && bCanChangeToKR);
+			changeSharedFont(SHARED_FONT_TYPE_KR);
 		}
 		//else if (kDown != 0)
 		//{
@@ -541,6 +412,10 @@ int main(int argc, char* argv[])
 		//}
 		gfxFlushBuffers();
 		gfxSwapBuffers();
+	}
+	if (g_uFontAddress != 0)
+	{
+		linearFree((void*)g_uFontAddress);
 	}
 	gfxExit();
 	return 0;

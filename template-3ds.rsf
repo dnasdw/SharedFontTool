@@ -32,7 +32,7 @@ ExeFs: # these are the program segments from the ELF, check your elf for the app
    - .init
    - .text
    - STUP_ENTRY
-
+   
 PlainRegion: # only used with SDK ELFs 
   #- .module_id
 
@@ -82,14 +82,14 @@ AccessControlInfo:
    # - UseSdif3
    # - CreateSeed
    # - UseCardSpi
-
+   
   IdealProcessor                : 0
   AffinityMask                  : 1
-
+  
   Priority                      : 16
 
   MaxCpu                        : 0x9E # Default
-
+  
   # DisableDebug                  : true
   # EnableForceDebug              : false
   # CanWriteSharedPage            : true
@@ -99,10 +99,10 @@ AccessControlInfo:
   # CanShareDeviceMemory          : true
   # RunnableOnSleep               : false
   # SpecialMemoryArrange          : true
-
+  
   CoreVersion                   : 2
   DescVersion                   : 2
-
+  
   ReleaseKernelMajor            : "02"
   ReleaseKernelMinor            : "33" 
   MemoryType                    : Application # Application / System / Base
@@ -164,7 +164,6 @@ AccessControlInfo:
     UnmapMemoryBlock: 32
     WaitSynchronization1: 36
     WaitSynchronizationN: 37
-    controlProcessMemory: 112
   InterruptNumbers:
   ServiceAccessControl: 
    - APT:U
