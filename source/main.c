@@ -135,7 +135,7 @@ static inline bool isMemoryAddressWithinGSP(u32 a_uAddress)
 
 Result doGSPWN(void* a_pDest, void* a_pSrc, u32 a_uSize)
 {
-	return GX_SetTextureCopy(NULL, a_pSrc, 0xFFFFFFFF, a_pDest, 0xFFFFFFFF, a_uSize, 8);
+	return GX_TextureCopy(a_pSrc, 0xFFFFFFFF, a_pDest, 0xFFFFFFFF, a_uSize, 8);
 }
 
 void* memoryCopy(void* a_pDest, void* a_pSrc, u32 a_uSize)
@@ -155,7 +155,7 @@ void* memoryCopy(void* a_pDest, void* a_pSrc, u32 a_uSize)
 			{
 				u32 uSize = nRemain >= g_kBufferSize ? g_kBufferSize : (u32)nRemain;
 				doGSPWN((u8*)a_pDest + nOffset, (u8*)a_pSrc + nOffset, uSize);
-				GSPGPU_FlushDataCache(NULL, (u8*)a_pDest + nOffset, uSize);
+				GSPGPU_FlushDataCache((u8*)a_pDest + nOffset, uSize);
 				svcSleepThread(5 * 1000 * 1000);
 				nRemain -= uSize;
 				nOffset += uSize;
@@ -229,7 +229,7 @@ u32 font2runtime(u8* a_pFont)
 
 u32 changeSharedFont(SharedFontType a_eType)
 {
-	static const char* c_kPath[] = { "", "sdmc:/font/std/cbf_std.bcfnt", "sdmc:/font/cn/cbf_zh-Hans-CN.bcfnt", "sdmc:/font/kr/cbf_ko-Hang-KR.bcfnt", "sdmc:/font/tw/cbf_zh-Hant-TW.bcfnt" };
+	static const char* c_kPath[] = { "", "romfs:/font/std/cbf_std.bcfnt", "romfs:/font/cn/cbf_zh-Hans-CN.bcfnt", "romfs:/font/kr/cbf_ko-Hang-KR.bcfnt", "romfs:/font/tw/cbf_zh-Hant-TW.bcfnt" };
 	if (a_eType <= SHARED_FONT_TYPE_NULL || a_eType > SHARED_FONT_TYPE_TW)
 	{
 		return 1;
@@ -301,6 +301,7 @@ int main(int argc, char* argv[])
 {
 	gfxInitDefault();
 	consoleInit(GFX_BOTTOM, NULL);
+	romfsInit();
 	printf("\E[%d;0H""        Shared Font Tool v1.2\n", g_nCurrentLine++);
 	printf("\E[%d;0H""\n", g_nCurrentLine++);
 	printf("\E[%d;0H""Press START : exit\n", g_nCurrentLine++);
@@ -308,9 +309,9 @@ int main(int argc, char* argv[])
 	uKernelVersion = osGetKernelVersion();
 	if (uKernelVersion > SYSTEM_VERSION(2, 44, 6))
 	{
-		u8 uOut;
-		Result result = APT_CheckNew3DS(0, &uOut);
-		if (result == 0 && uOut != 0)
+		bool bNew3DS;
+		Result result = APT_CheckNew3DS(&bNew3DS);
+		if (result == 0 && bNew3DS)
 		{
 			g_bNew3DS = true;
 		}
@@ -417,6 +418,7 @@ int main(int argc, char* argv[])
 	{
 		linearFree((void*)g_uFontAddress);
 	}
+	romfsExit();
 	gfxExit();
 	return 0;
 }
