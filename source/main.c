@@ -28,7 +28,7 @@ typedef struct SharedFontBufferHeader
 	u32 SharedFontLoadState;
 	u32 SharedFontType;
 	u32 Size;
-	u8 Padding[116];
+	u8 Padding[0x74];
 } __attribute__((packed)) SharedFontBufferHeader;
 
 typedef struct BinaryFileHeader
@@ -105,27 +105,55 @@ typedef struct FontCodeMap
 #define GSP_HEAP_END_OFFSET_DEFAULT (GSP_HEAP_START_OFFSET_DEFAULT + GSP_HEAP_MAX_LENGTH)
 #define GSP_HEAP_END_OFFSET_FIRM80 (GSP_HEAP_START_OFFSET_FIRM80 + GSP_HEAP_MAX_LENGTH)
 
+#define FONT_COUNT 11
+
 const u32 g_kBinFileSigFONT = CONVERT_ENDIAN('CFNT');
 const u32 g_kBinRuntimeSigFONT = CONVERT_ENDIAN('CFNU');
 const u32 g_kBinBlockSigFINF = CONVERT_ENDIAN('FINF');
 const u32 g_kSharedFontMemorySize = 1024 * 4 * 818;	// Shared memory size for shared fonts: 3,272 KB
 const s32 g_kBufferSize = 0x1000;
 
+const s32 g_nTopColumn = 50;
+const s32 g_nBottomColumn = 40;
+
+PrintConsole g_TopScreen = {};
+PrintConsole g_BottomScreen = {};
+
 u32 g_uSharedFontType = SHARED_FONT_TYPE_NULL;
 bool g_bNew3DS = false;
 u32 g_uAddress = ADDRESS_NON_NEW_3DS;
 u32 g_uFontAddress = 0;
-s32 g_nCurrentLine = 1;
+s32 g_nTopCurrentLine = 2;
+s32 g_nBottomCurrentLine = 2;
+s32 g_nCursorIndex = 0;
 
-void clearOutput()
+void clearTop()
 {
-	static const char* c_pLine = "                                        ";
-	for (s32 i = 13; i < 25; i++)
+	consoleSelect(&g_TopScreen);
+	static const char* c_pEraser = "  ";
+	static const char* c_pCursorLeft = "=>";
+	static const char* c_pCursorRight = "<=";
+	for (s32 i = 0; i < FONT_COUNT; i++)
 	{
-		printf("\E[%d;0H%s", i, c_pLine);
+		printf("\E[%d;3H%s", i + 8, c_pEraser);
+		printf("\E[%d;47H%s", i + 8, c_pEraser);
 	}
-	g_nCurrentLine = 13;
-	printf("\E[%d;0H", g_nCurrentLine);
+	g_nTopCurrentLine = g_nCursorIndex + 8;
+	printf("\E[%d;3H%s", g_nTopCurrentLine, c_pCursorLeft);
+	printf("\E[%d;47H%s", g_nTopCurrentLine, c_pCursorRight);
+}
+
+void clearBottom()
+{
+	consoleSelect(&g_BottomScreen);
+	static const char* c_pLine = "                                        ";
+	for (s32 i = 5; i <= 30; i++)
+	{
+		printf("\E[%d;1H%s", i, c_pLine);
+	}
+	g_nBottomCurrentLine = 5;
+	// bottom 5,1
+	printf("\E[%d;1H", g_nBottomCurrentLine);
 }
 
 static inline bool isMemoryAddressWithinGSP(u32 a_uAddress)
@@ -148,8 +176,8 @@ void* memoryCopy(void* a_pDest, void* a_pSrc, u32 a_uSize)
 		{
 			s64 nRemain = a_uSize;
 			s32 nOffset = 0;
-			printf("\E[%d;0H""Do GSPWN\n", g_nCurrentLine++);
-			printf("\E[%d;0H""copy from %08x to %08x\n", g_nCurrentLine++, (u32)a_pSrc, (u32)a_pDest);
+			printf("\E[%d;1H""Do GSPWN\n", g_nBottomCurrentLine++);
+			printf("\E[%d;1H""copy from %08x to %08x\n", g_nBottomCurrentLine++, (u32)a_pSrc, (u32)a_pDest);
 			bool bChangeLine = false;
 			while (nRemain > 0)
 			{
@@ -159,12 +187,12 @@ void* memoryCopy(void* a_pDest, void* a_pSrc, u32 a_uSize)
 				svcSleepThread(5 * 1000 * 1000);
 				nRemain -= uSize;
 				nOffset += uSize;
-				printf("\E[%d;0H""%08x bytes done\n", g_nCurrentLine, nOffset);
+				printf("\E[%d;1H""%08x bytes done\n", g_nBottomCurrentLine, nOffset);
 				bChangeLine = true;
 			}
 			if (bChangeLine)
 			{
-				g_nCurrentLine++;
+				g_nBottomCurrentLine++;
 			}
 		}
 		else
@@ -188,7 +216,7 @@ void* memoryCopy(void* a_pDest, void* a_pSrc, u32 a_uSize)
 
 void initSharedFontType()
 {
-	clearOutput();
+	clearBottom();
 	SharedFontBufferHeader* pHeader = (SharedFontBufferHeader*)linearAlloc((sizeof(SharedFontBufferHeader) + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
 	memoryCopy(pHeader, (void*)g_uAddress, (sizeof(SharedFontBufferHeader) + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
 	g_uSharedFontType = pHeader->SharedFontType;
@@ -227,14 +255,27 @@ u32 font2runtime(u8* a_pFont)
 	return 0;
 }
 
-u32 changeSharedFont(SharedFontType a_eType)
+u32 changeSharedFont(s32 a_nFontIndex)
 {
-	static const char* c_kPath[] = { "", "romfs:/font/std/cbf_std.bcfnt", "romfs:/font/cn/cbf_zh-Hans-CN.bcfnt", "romfs:/font/kr/cbf_ko-Hang-KR.bcfnt", "romfs:/font/tw/cbf_zh-Hant-TW.bcfnt" };
-	if (a_eType <= SHARED_FONT_TYPE_NULL || a_eType > SHARED_FONT_TYPE_TW)
+	static const char* c_kPath[FONT_COUNT] =
+	{
+		"romfs:/font/cj/cbf_cj.bcfnt"
+		, "romfs:/font/cj/cbf_zh-Hans-CN.bcfnt"
+		, "romfs:/font/cj/cbf_std.bcfnt"
+		, "romfs:/font/cn/cbf_zh-Hans-CN.bcfnt"
+		, "romfs:/font/tw/cbf_zh-Hant-TW.bcfnt"
+		, "romfs:/font/std/cbf_std.bcfnt"
+		, "romfs:/font/kr/cbf_ko-Hang-KR.bcfnt"
+		, "sdmc:/font/cn/cbf_zh-Hans-CN.bcfnt"
+		, "sdmc:/font/tw/cbf_zh-Hant-TW.bcfnt"
+		, "sdmc:/font/std/cbf_std.bcfnt"
+		, "sdmc:/font/kr/cbf_ko-Hang-KR.bcfnt"
+	};
+	if (a_nFontIndex < 0 || a_nFontIndex > FONT_COUNT)
 	{
 		return 1;
 	}
-	clearOutput();
+	clearBottom();
 	static s32 c_nTextColor = 0;
 	if (c_nTextColor == 32)
 	{
@@ -246,20 +287,20 @@ u32 changeSharedFont(SharedFontType a_eType)
 		printf("\E[0m");
 		c_nTextColor = 32;
 	}
-	printf("\E[%d;0H""Start change shared font %d\n", g_nCurrentLine++, a_eType);
-	FILE* fp = fopen(c_kPath[a_eType], "rb");
+	printf("\E[%d;1H""Start change shared font %d\n", g_nBottomCurrentLine++, a_nFontIndex);
+	FILE* fp = fopen(c_kPath[a_nFontIndex], "rb");
 	if (fp == NULL)
 	{
-		printf("\E[%d;0H""open %s error\n", g_nCurrentLine++, c_kPath[a_eType]);
+		printf("\E[%d;1H""open %s error\n", g_nBottomCurrentLine++, c_kPath[a_nFontIndex]);
 		return 2;
 	}
 	fseek(fp, 0, SEEK_END);
 	u32 uFileSize = ftell(fp);
-	printf("\E[%d;0H""font size 0x%X\n", g_nCurrentLine++, uFileSize);
+	printf("\E[%d;1H""font size 0x%X\n", g_nBottomCurrentLine++, uFileSize);
 	if (uFileSize > g_kSharedFontMemorySize - sizeof(SharedFontBufferHeader))
 	{
 		fclose(fp);
-		printf("\E[%d;0H""font size 0x%X > 0x%08X\n", g_nCurrentLine++, uFileSize, g_kSharedFontMemorySize - sizeof(SharedFontBufferHeader));
+		printf("\E[%d;1H""font size 0x%X > 0x%08X\n", g_nBottomCurrentLine++, uFileSize, g_kSharedFontMemorySize - sizeof(SharedFontBufferHeader));
 		return 3;
 	}
 	fseek(fp, 0, SEEK_SET);
@@ -269,14 +310,14 @@ u32 changeSharedFont(SharedFontType a_eType)
 		if (g_uFontAddress == 0)
 		{
 			fclose(fp);
-			printf("\E[%d;0H""linearAlloc error\n", g_nCurrentLine++);
+			printf("\E[%d;1H""linearAlloc error\n", g_nBottomCurrentLine++);
 			return 4;
 		}
 		else
 		{
-			printf("\E[%d;0H""linearAlloc ok\n", g_nCurrentLine++);
-			printf("\E[%d;0H""font address %X\n", g_nCurrentLine++, g_uFontAddress);
-			for (int i = 0xC; i < sizeof(SharedFontBufferHeader); i += 4)
+			printf("\E[%d;1H""linearAlloc ok\n", g_nBottomCurrentLine++);
+			printf("\E[%d;1H""font address %X\n", g_nBottomCurrentLine++, g_uFontAddress);
+			for (s32 i = 0xC; i < sizeof(SharedFontBufferHeader); i += 4)
 			{
 				*(u32*)(g_uFontAddress + i) = 0;
 			}
@@ -293,124 +334,224 @@ u32 changeSharedFont(SharedFontType a_eType)
 		return 5;
 	}
 	memoryCopy((void*)g_uAddress, (void*)g_uFontAddress, (sizeof(SharedFontBufferHeader) + uFileSize + g_kBufferSize - 1) / g_kBufferSize * g_kBufferSize);
-	printf("\E[%d;0H""change font ok\n", g_nCurrentLine++);
+	printf("\E[%d;1H""change font ok\n", g_nBottomCurrentLine++);
 	return 0;
 }
 
 int main(int argc, char* argv[])
 {
 	gfxInitDefault();
-	consoleInit(GFX_BOTTOM, NULL);
+	consoleInit(GFX_TOP, &g_TopScreen);
+	consoleInit(GFX_BOTTOM, &g_BottomScreen);
 	romfsInit();
-	printf("\E[%d;0H""        Shared Font Tool v1.2\n", g_nCurrentLine++);
-	printf("\E[%d;0H""\n", g_nCurrentLine++);
-	printf("\E[%d;0H""Press START : exit\n", g_nCurrentLine++);
-	u32 uKernelVersion = 0;
-	uKernelVersion = osGetKernelVersion();
-	if (uKernelVersion > SYSTEM_VERSION(2, 44, 6))
+	const char* pTitle = "Shared Font Tool v2.0";
+	const char* pAuthors = "dnasdw, enler";
+	consoleSelect(&g_BottomScreen);
+	// bottom 2,1
+	printf("\E[%d;1H", g_nBottomCurrentLine++);
+	for (s32 i = 0; i < (g_nBottomColumn - strlen(pTitle)) / 2; i++)
 	{
-		bool bNew3DS;
-		Result result = APT_CheckNew3DS(&bNew3DS);
-		if (result == 0 && bNew3DS)
-		{
-			g_bNew3DS = true;
-		}
+		printf(" ");
 	}
-	g_nCurrentLine = 10;
-	printf("\E[%d;0H""New3DS: %s\n", g_nCurrentLine++, g_bNew3DS ? "true" : "false");
+	printf("%s", pTitle);
+	// bottom 3,1
+	printf("\E[%d;1H", g_nBottomCurrentLine++);
+	for (s32 i = 0; i < (g_nBottomColumn - strlen(pAuthors)) / 2; i++)
+	{
+		printf(" ");
+	}
+	printf("%s", pAuthors);
+	// bottom 4,1
+	printf("\E[%d;1H", g_nBottomCurrentLine++);
+	consoleSelect(&g_TopScreen);
+	// top 2,1
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	for (s32 i = 0; i < (g_nTopColumn - strlen(pTitle)) / 2; i++)
+	{
+		printf(" ");
+	}
+	printf("%s", pTitle);
+	// top 3,1
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	for (s32 i = 0; i < (g_nTopColumn - strlen(pAuthors)) / 2; i++)
+	{
+		printf(" ");
+	}
+	printf("%s", pAuthors);
+	// top 4,1
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	APT_CheckNew3DS(&g_bNew3DS);
 	if (g_bNew3DS)
 	{
 		g_uAddress = ADDRESS_NEW_3DS;
 	}
+	// top 5,6
+	printf("\E[%d;6H""New3DS: %s", g_nTopCurrentLine++, g_bNew3DS ? "true" : "false");
 	initSharedFontType();
-	printf("\E[11;0H");
-	printf("SharedFontType: ");
+	s32 nRecoverPossibility = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	s32 nChangeFontPossibility[FONT_COUNT] = {};
+	nChangeFontPossibility[0] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[1] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[2] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[3] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[4] = g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[5] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[6] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
+	nChangeFontPossibility[7] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 1 : 0;
+	nChangeFontPossibility[8] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 1 : 0;
+	nChangeFontPossibility[9] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 1 : 0;
+	nChangeFontPossibility[10] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 1 : 0;
+	s32 nColor[3] = {31, 33, 32};	// red, yellow, green
+	s32 nRecoverIndex = -1;
+	consoleSelect(&g_TopScreen);
+	// top 6,6
+	printf("\E[%d;6H""SharedFontType: ", g_nTopCurrentLine++);
 	switch (g_uSharedFontType)
 	{
 	case SHARED_FONT_TYPE_NULL:
 		printf("null");
 		break;
 	case SHARED_FONT_TYPE_STD:
+		nRecoverIndex = 5;
 		printf("std");
 		break;
 	case SHARED_FONT_TYPE_CN:
+		nRecoverIndex = 3;
 		printf("cn");
 		break;
 	case SHARED_FONT_TYPE_KR:
+		nRecoverIndex = 4;
 		printf("kr");
 		break;
 	case SHARED_FONT_TYPE_TW:
+		nRecoverIndex = 6;
 		printf("tw");
 		break;
 	default:
 		printf("unknown");
 		break;
 	}
-	printf("\n");
-	bool bCanRecover = false;
-	bool bCanChangeToCN = false;
-	bool bCanChangeToTW = false;
-	bool bCanChangeToSTD = false;
-	bool bCanChangeToKR = false;
-	if (g_uSharedFontType > SHARED_FONT_TYPE_NULL)
-	{
-		bCanRecover = true;
-		printf("\E[4;0H");
-		printf("Press SELECT: recover font\n");
-		if (g_uSharedFontType != SHARED_FONT_TYPE_KR)
-		{
-			printf("Press RIGHT : change font to cn (C)\n");
-			bCanChangeToCN = true;
-		}
-		if (g_uSharedFontType != SHARED_FONT_TYPE_KR && g_uSharedFontType != SHARED_FONT_TYPE_CN && g_uSharedFontType != SHARED_FONT_TYPE_STD)
-		{
-			printf("Press LEFT  : change font to tw (T)\n");
-			bCanChangeToTW = true;
-		}
-		if (g_uSharedFontType != SHARED_FONT_TYPE_KR && g_uSharedFontType != SHARED_FONT_TYPE_CN)
-		{
-			printf("Press UP    : change font to std(J/U/E)\n");
-			bCanChangeToSTD = true;
-		}
-		if (true)
-		{
-			printf("Press DOWN  : change font to kr (K)\n");
-			bCanChangeToKR = true;
-		}
-	}
+	// top 7,1
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	// top 8,6
+	printf("\E[%d;6H""\E[0;%dm"" 0. romfs: Chinese&Japanese (C/T/J/U/E)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[0]]);
+	// top 9,6
+	printf("\E[%d;6H""\E[0;%dm"" 1. romfs: modified official cn (C)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[1]]);
+	// top 10,6
+	printf("\E[%d;6H""\E[0;%dm"" 2. romfs: modified official std (J/U/E)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[2]]);
+	// top 11,6
+	printf("\E[%d;6H""\E[0;%dm"" 3. romfs: official cn (C)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[3]]);
+	// top 12,6
+	printf("\E[%d;6H""\E[0;%dm"" 4. romfs: official tw (T)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[4]]);
+	// top 13,6
+	printf("\E[%d;6H""\E[0;%dm"" 5. romfs: official std (J/U/E)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[5]]);
+	// top 14,6
+	printf("\E[%d;6H""\E[0;%dm"" 6. romfs: official kr (K)""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[6]]);
+	// top 15,6
+	printf("\E[%d;6H""\E[0;%dm"" 7. sdmc:  /font/cn/cbf_zh-Hans-CN.bcfnt""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[7]]);
+	// top 16,6
+	printf("\E[%d;6H""\E[0;%dm"" 8. sdmc:  /font/tw/cbf_zh-Hant-TW.bcfnt""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[8]]);
+	// top 17,6
+	printf("\E[%d;6H""\E[0;%dm"" 9. sdmc:  /font/std/cbf_std.bcfnt""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[9]]);
+	// top 18,6
+	printf("\E[%d;6H""\E[0;%dm""10. sdmc:  /font/kr/cbf_ko-Hang-KR.bcfnt""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[10]]);
+	// top 19,1
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	// top 20,6
+	printf("\E[%d;6H""\E[0;32m""Color Green  : will not crash""\E[0m", g_nTopCurrentLine++);
+	// top 21,6
+	printf("\E[%d;6H""\E[0;33m""Color Yellow : maybe crash""\E[0m", g_nTopCurrentLine++);
+	// top 22,6
+	printf("\E[%d;6H""\E[0;31m""Color Red    : will crash""\E[0m", g_nTopCurrentLine++);
+	// top 23,1
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	// top 24,6
+	printf("\E[%d;6H""DPAD : UP DOWN LEFT RIGHT", g_nTopCurrentLine++);
+	// top 25,6
+	printf("\E[%d;1H", g_nTopCurrentLine++);
+	// top 26,6
+	printf("\E[%d;6H""Press DPAD   : move the cursor =>", g_nTopCurrentLine++);
+	// top 27,6
+	printf("\E[%d;6H""\E[0;%dm""Press A      : perform change font""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[g_nCursorIndex]]);
+	// top 28,6
+	printf("\E[%d;6H""\E[0;%dm""Press SELECT : recover font""\E[0m", g_nTopCurrentLine++, nColor[nRecoverPossibility]);
+	// top 29,6
+	printf("\E[%d;6H""Press START  : exit", g_nTopCurrentLine++);
+	clearTop();
+	consoleSelect(&g_BottomScreen);
 	while (aptMainLoop())
 	{
 		gspWaitForVBlank();
 		hidScanInput();
-		u32 kDown = hidKeysDown();
-		if ((kDown & KEY_START) != 0)
+		u32 uKeysDown = hidKeysDown();
+		if ((uKeysDown & KEY_START) != 0)
 		{
 			break;
 		}
-		else if ((kDown & KEY_SELECT) != 0 && bCanRecover)
+		else if ((uKeysDown & KEY_SELECT) != 0)
 		{
-			changeSharedFont(g_uSharedFontType);
+			if (nRecoverPossibility == 0)
+			{
+				clearBottom();
+				// bottom 5,1
+				printf("\E[%d;1H""\E[0;31m""can not change font\E[0m\n", g_nBottomCurrentLine++);
+			}
+			else
+			{
+				changeSharedFont(nRecoverIndex);
+			}
 		}
-		else if ((kDown & KEY_DRIGHT) != 0 && bCanChangeToCN)
+		else if ((uKeysDown & KEY_A) != 0)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_CN);
+			if (nChangeFontPossibility[g_nCursorIndex] == 0)
+			{
+				clearBottom();
+				// bottom 5,1
+				printf("\E[%d;1H""\E[0;31m""can not change font\E[0m\n", g_nBottomCurrentLine++);
+			}
+			else
+			{
+				changeSharedFont(g_nCursorIndex);
+			}
 		}
-		else if ((kDown & KEY_DLEFT) != 0 && bCanChangeToTW)
+		else if ((uKeysDown & KEY_DRIGHT) != 0)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_TW);
+			g_nCursorIndex = 10;
+			clearTop();
+			g_nTopCurrentLine = 27;
+			// top 27,6
+			printf("\E[%d;6H""\E[0;%dm""Press A      : perform change font""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[g_nCursorIndex]]);
 		}
-		else if ((kDown & KEY_DUP) != 0 && bCanChangeToSTD)
+		else if ((uKeysDown & KEY_DLEFT) != 0)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_STD);
+			g_nCursorIndex = 0;
+			clearTop();
+			g_nTopCurrentLine = 27;
+			// top 27,6
+			printf("\E[%d;6H""\E[0;%dm""Press A      : perform change font""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[g_nCursorIndex]]);
 		}
-		else if ((kDown & KEY_DDOWN) != 0 && bCanChangeToKR)
+		else if ((uKeysDown & KEY_DUP) != 0)
 		{
-			changeSharedFont(SHARED_FONT_TYPE_KR);
+			g_nCursorIndex = (g_nCursorIndex - 1 + FONT_COUNT) % FONT_COUNT;
+			clearTop();
+			g_nTopCurrentLine = 27;
+			// top 27,6
+			printf("\E[%d;6H""\E[0;%dm""Press A      : perform change font""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[g_nCursorIndex]]);
 		}
-		//else if (kDown != 0)
-		//{
-		//	printf("\E[25;0H\E[0m%-10u\n", kDown);
-		//}
+		else if ((uKeysDown & KEY_DDOWN) != 0)
+		{
+			g_nCursorIndex = (g_nCursorIndex + 1) % FONT_COUNT;
+			clearTop();
+			g_nTopCurrentLine = 27;
+			// top 27,6
+			printf("\E[%d;6H""\E[0;%dm""Press A      : perform change font""\E[0m", g_nTopCurrentLine++, nColor[nChangeFontPossibility[g_nCursorIndex]]);
+		}
+		// else if (uKeysDown != 0)
+		// {
+		// 	consoleSelect(&g_BottomScreen);
+		// 	// bottom 29,1
+		// 	printf("\E[29;1H\E[0m%-10u\n", uKeysDown);
+		// }
 		gfxFlushBuffers();
 		gfxSwapBuffers();
 	}
