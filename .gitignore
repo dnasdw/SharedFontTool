@@ -3,4 +3,6 @@ cmake-build-debug
 CMakeLists.txt
 
 build
+build_big
 output
+output_big

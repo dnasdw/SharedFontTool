@@ -97,7 +97,11 @@ typedef struct FontCodeMap
 } __attribute__((packed)) FontCodeMap;
 
 #define CONVERT_ENDIAN(n) (((n) >> 24 & 0xFF) | ((n) >> 8 & 0xFF00) | (((n) & 0xFF00) << 8) | (((n) & 0xFF) << 24))
+#if SFTSYSTEM_MODE == 64
 #define ADDRESS_NON_NEW_3DS 0x18000000
+#elif SFTSYSTEM_MODE == 80
+#define ADDRESS_NON_NEW_3DS 0x19000000
+#endif
 #define ADDRESS_NEW_3DS 0x1bc00000
 #define GSP_HEAP_START_OFFSET_DEFAULT 0x14000000
 #define GSP_HEAP_START_OFFSET_FIRM80 0x30000000
@@ -344,8 +348,12 @@ int main(int argc, char* argv[])
 	consoleInit(GFX_TOP, &g_TopScreen);
 	consoleInit(GFX_BOTTOM, &g_BottomScreen);
 	romfsInit();
-	const char* pTitle = "Shared Font Tool v2.0";
-	const char* pAuthors = "dnasdw, enler";
+#if SFTSYSTEM_MODE == 64
+	const char* pTitle = "Shared Font Tool v3.0";
+#elif SFTSYSTEM_MODE == 80
+	const char* pTitle = "Big Shared Font Tool v3.0";
+#endif
+	const char* pAuthors = "dnasdw and enler";
 	consoleSelect(&g_BottomScreen);
 	// bottom 2,1
 	printf("\E[%d;1H", g_nBottomCurrentLine++);
@@ -388,6 +396,13 @@ int main(int argc, char* argv[])
 	// top 5,6
 	printf("\E[%d;6H""New3DS: %s", g_nTopCurrentLine++, g_bNew3DS ? "true" : "false");
 	initSharedFontType();
+	s32 nExitPossibility = 2;
+	if (!g_bNew3DS)
+	{
+#if SFTSYSTEM_MODE == 64
+		nExitPossibility = 0;
+#endif
+	}
 	s32 nRecoverPossibility = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
 	s32 nChangeFontPossibility[FONT_COUNT] = {};
 	nChangeFontPossibility[0] = g_uSharedFontType == SHARED_FONT_TYPE_STD || g_uSharedFontType == SHARED_FONT_TYPE_CN || g_uSharedFontType == SHARED_FONT_TYPE_KR || g_uSharedFontType == SHARED_FONT_TYPE_TW ? 2 : 0;
@@ -476,7 +491,18 @@ int main(int argc, char* argv[])
 	// top 28,6
 	printf("\E[%d;6H""\E[0;%dm""Press SELECT : recover font""\E[0m", g_nTopCurrentLine++, nColor[nRecoverPossibility]);
 	// top 29,6
-	printf("\E[%d;6H""Press START  : exit", g_nTopCurrentLine++);
+	if (g_bNew3DS)
+	{
+		printf("\E[%d;6H""Press START  : exit", g_nTopCurrentLine++);
+	}
+	else
+	{
+#if SFTSYSTEM_MODE == 64
+		printf("\E[%d;6H""Press START  : exit", g_nTopCurrentLine++);
+#else
+		printf("\E[%d;6H""Press HOME   : for start the game manually", g_nTopCurrentLine++);
+#endif
+	}
 	clearTop();
 	consoleSelect(&g_BottomScreen);
 	while (aptMainLoop())
@@ -486,7 +512,10 @@ int main(int argc, char* argv[])
 		u32 uKeysDown = hidKeysDown();
 		if ((uKeysDown & KEY_START) != 0)
 		{
-			break;
+			if (nExitPossibility != 0)
+			{
+				break;
+			}
 		}
 		else if ((uKeysDown & KEY_SELECT) != 0)
 		{

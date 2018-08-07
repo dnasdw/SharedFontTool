@@ -11,10 +11,10 @@ endif
 
 # COMMON CONFIGURATION #
 
-NAME := SFontT
+NAME := SFontT80
 
-BUILD_DIR := build
-OUTPUT_DIR := output
+BUILD_DIR := build_big
+OUTPUT_DIR := output_big
 INCLUDE_DIRS := include
 SOURCE_DIRS := source
 
@@ -24,7 +24,7 @@ LIBRARY_DIRS :=
 LIBRARIES :=
 
 BUILD_FLAGS :=
-BUILD_FLAGS_CC := -DSFTSYSTEM_MODE=64
+BUILD_FLAGS_CC := -DSFTSYSTEM_MODE=80
 BUILD_FLAGS_CXX :=
 RUN_FLAGS :=
 
@@ -36,7 +36,7 @@ VERSION_MICRO := 0
 
 ifeq ($(TARGET),$(filter $(TARGET),3DS WIIU))
     TITLE := $(NAME)
-    DESCRIPTION := Shared Font Tool
+    DESCRIPTION := Big Shared Font Tool
     AUTHOR := dnasdw and enler
 endif
 
@@ -46,14 +46,14 @@ ifeq ($(TARGET),3DS)
     LIBRARY_DIRS += $(DEVKITPRO)/libctru
     LIBRARIES += ctru
 
-    PRODUCT_CODE := CTR-P-ASFA
-    UNIQUE_ID := 0xF0001
+    PRODUCT_CODE := CTR-P-BSFA
+    UNIQUE_ID := 0xF0002
 
     CATEGORY := Application
     USE_ON_SD := true
 
     MEMORY_TYPE := Application
-    SYSTEM_MODE := 64MB
+    SYSTEM_MODE := 80MB
     SYSTEM_MODE_EXT := Legacy
     CPU_SPEED := 268MHz
     ENABLE_L2_CACHE := true
@@ -62,8 +62,8 @@ ifeq ($(TARGET),3DS)
 
     ROMFS_DIR := romfs
     BANNER_AUDIO := meta/audio_3ds.wav
-    BANNER_IMAGE := meta/banner_3ds.png
-    ICON := meta/icon_3ds.png
+    BANNER_IMAGE := meta/banner_3ds_big.png
+    ICON := meta/icon_3ds_big.png
     LOGO := meta/logo.darc.lz
 endif
 
