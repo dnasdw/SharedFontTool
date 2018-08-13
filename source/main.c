@@ -349,9 +349,9 @@ int main(int argc, char* argv[])
 	consoleInit(GFX_BOTTOM, &g_BottomScreen);
 	romfsInit();
 #if SFTSYSTEM_MODE == 64
-	const char* pTitle = "Shared Font Tool v3.0";
+	const char* pTitle = "Shared Font Tool v3.1";
 #elif SFTSYSTEM_MODE == 80
-	const char* pTitle = "Big Shared Font Tool v3.0";
+	const char* pTitle = "Big Shared Font Tool v3.1";
 #endif
 	const char* pAuthors = "dnasdw and enler";
 	consoleSelect(&g_BottomScreen);
@@ -399,7 +399,7 @@ int main(int argc, char* argv[])
 	s32 nExitPossibility = 2;
 	if (!g_bNew3DS)
 	{
-#if SFTSYSTEM_MODE == 64
+#if SFTSYSTEM_MODE == 80
 		nExitPossibility = 0;
 #endif
 	}
